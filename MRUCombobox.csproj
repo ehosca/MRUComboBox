@@ -42,7 +42,13 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ToolStripMRUComboBox.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="MRUComboBox.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="MRUComboBoxStripControlHost.cs">
       <SubType>Component</SubType>
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
