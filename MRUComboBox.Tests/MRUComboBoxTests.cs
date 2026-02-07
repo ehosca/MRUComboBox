@@ -47,6 +47,18 @@ namespace MRUComboBox.Tests
             Assert.AreEqual(0, _comboBox.Items.Count);
         }
 
+        [Test]
+        public void Constructor_SetsMaxItemsToDefault()
+        {
+            Assert.AreEqual(10, _comboBox.MaxItems);
+        }
+
+        [Test]
+        public void Constructor_SetsCaseSensitiveToFalse()
+        {
+            Assert.IsFalse(_comboBox.CaseSensitive);
+        }
+
         #endregion
 
         #region Item Management Tests
@@ -189,13 +201,16 @@ namespace MRUComboBox.Tests
         }
 
         [Test]
-        public void SelectedIndex_SetValid_UpdatesSelection()
+        public void SelectedIndex_SetValid_AutoPromotesToTop()
         {
             _comboBox.Items.Add("Item1");
             _comboBox.Items.Add("Item2");
             _comboBox.SelectedIndex = 1;
 
-            Assert.AreEqual(1, _comboBox.SelectedIndex);
+            // Auto-promote moves selected item to index 0
+            Assert.AreEqual(0, _comboBox.SelectedIndex);
+            Assert.AreEqual("Item2", _comboBox.Items[0]);
+            Assert.AreEqual("Item1", _comboBox.Items[1]);
         }
 
         [Test]
@@ -229,29 +244,6 @@ namespace MRUComboBox.Tests
             Assert.AreEqual(0, dict.Count);
         }
 
-        [Test]
-        public void DeleteRectangles_NotClearedOnItemRemoval()
-        {
-            // This test documents a known bug: _deleteRectangles is not
-            // cleaned up when items are removed, leading to stale entries.
-            var field = typeof(Hosca.Windows.Forms.MRUComboBox)
-                .GetField("_deleteRectangles", BindingFlags.NonPublic | BindingFlags.Instance);
-            var dict = (Dictionary<int, Rectangle>)field.GetValue(_comboBox);
-
-            // Simulate what DrawItem would do
-            dict[0] = new Rectangle(100, 0, 12, 12);
-            dict[1] = new Rectangle(100, 20, 12, 12);
-            dict[2] = new Rectangle(100, 40, 12, 12);
-
-            _comboBox.Items.Add("A");
-            _comboBox.Items.Add("B");
-            _comboBox.Items.Add("C");
-            _comboBox.Items.RemoveAt(1);
-
-            // Bug: dictionary still has 3 entries with stale indices
-            Assert.AreEqual(3, dict.Count, "Bug: stale delete rectangles remain after item removal");
-        }
-
         #endregion
 
         #region Property Tests
@@ -259,8 +251,6 @@ namespace MRUComboBox.Tests
         [Test]
         public void DropDownStyle_CannotBeChangedToDropDownList_StillAllowed()
         {
-            // The constructor sets DropDown, but there's no guard preventing changes.
-            // This documents the lack of enforcement.
             _comboBox.DropDownStyle = ComboBoxStyle.DropDownList;
             Assert.AreEqual(ComboBoxStyle.DropDownList, _comboBox.DropDownStyle);
         }
@@ -268,7 +258,6 @@ namespace MRUComboBox.Tests
         [Test]
         public void DrawMode_IsOwnerDrawVariable()
         {
-            // Required for custom drawing of delete icons
             Assert.AreEqual(DrawMode.OwnerDrawVariable, _comboBox.DrawMode);
         }
 
@@ -279,7 +268,6 @@ namespace MRUComboBox.Tests
         [Test]
         public void AddItem_NullItem_ThrowsArgumentNullException()
         {
-            // ComboBox rejects null items
             Assert.Throws<ArgumentNullException>(() => _comboBox.Items.Add(null));
         }
 
@@ -293,8 +281,6 @@ namespace MRUComboBox.Tests
         [Test]
         public void AddItem_NonStringObject_Allowed()
         {
-            // Documents potential issue: DrawItem casts to (string) which would
-            // throw InvalidCastException for non-string objects
             _comboBox.Items.Add(42);
             Assert.AreEqual(1, _comboBox.Items.Count);
         }
@@ -319,10 +305,10 @@ namespace MRUComboBox.Tests
         {
             _comboBox.Items.Add("C:\\Path\\To\\File.txt");
             _comboBox.Items.Add("https://example.com?q=test&p=1");
-            _comboBox.Items.Add("日本語テスト");
+            _comboBox.Items.Add("\u65E5\u672C\u8A9E\u30C6\u30B9\u30C8");
 
             Assert.AreEqual(3, _comboBox.Items.Count);
-            Assert.AreEqual("日本語テスト", _comboBox.Items[2]);
+            Assert.AreEqual("\u65E5\u672C\u8A9E\u30C6\u30B9\u30C8", _comboBox.Items[2]);
         }
 
         #endregion
@@ -334,7 +320,6 @@ namespace MRUComboBox.Tests
         {
             _comboBox.Items.AddRange(new object[] { "A", "B", "C", "D", "E" });
 
-            // Remove from highest index first (as the code does in HandleListBoxWindowMouseUp)
             _comboBox.Items.RemoveAt(4);
             _comboBox.Items.RemoveAt(2);
             _comboBox.Items.RemoveAt(0);
@@ -349,9 +334,8 @@ namespace MRUComboBox.Tests
         {
             _comboBox.Items.AddRange(new object[] { "A", "B", "C", "D", "E" });
 
-            // Removing forward causes index shifting — this is why the code sorts descending
-            _comboBox.Items.RemoveAt(0); // Removes "A", B is now [0]
-            _comboBox.Items.RemoveAt(0); // Removes "B", C is now [0]
+            _comboBox.Items.RemoveAt(0);
+            _comboBox.Items.RemoveAt(0);
 
             Assert.AreEqual(3, _comboBox.Items.Count);
             Assert.AreEqual("C", _comboBox.Items[0]);
@@ -362,21 +346,247 @@ namespace MRUComboBox.Tests
         #region Internal P/Invoke Tests
 
         [Test]
-        public void GetComboBoxListInternal_WithZeroHandle_DoesNotThrow()
+        public void GetComboBoxListInternal_WithZeroHandle_ReturnsZero()
         {
-            // GetComboBoxListInternal is internal, so we access it via reflection.
-            // Passing IntPtr.Zero should not crash, though it returns an invalid handle.
             var method = typeof(Hosca.Windows.Forms.MRUComboBox)
                 .GetMethod("GetComboBoxListInternal", BindingFlags.Static | BindingFlags.NonPublic);
 
             if (method != null)
             {
-                Assert.DoesNotThrow(() => method.Invoke(null, new object[] { IntPtr.Zero }));
+                var result = (IntPtr)method.Invoke(null, new object[] { IntPtr.Zero });
+                Assert.AreEqual(IntPtr.Zero, result);
             }
             else
             {
                 Assert.Inconclusive("GetComboBoxListInternal method not found via reflection.");
             }
+        }
+
+        #endregion
+
+        #region MaxItems Tests
+
+        [Test]
+        public void MaxItems_DefaultIs10()
+        {
+            Assert.AreEqual(10, _comboBox.MaxItems);
+        }
+
+        [Test]
+        public void MaxItems_CanBeSet()
+        {
+            _comboBox.MaxItems = 5;
+            Assert.AreEqual(5, _comboBox.MaxItems);
+        }
+
+        [Test]
+        public void AddMRUItem_ExceedingMaxItems_EvictsOldest()
+        {
+            _comboBox.MaxItems = 3;
+            _comboBox.AddMRUItem("First");
+            _comboBox.AddMRUItem("Second");
+            _comboBox.AddMRUItem("Third");
+            _comboBox.AddMRUItem("Fourth");
+
+            Assert.AreEqual(3, _comboBox.Items.Count);
+            Assert.AreEqual("Fourth", _comboBox.Items[0]);
+            Assert.AreEqual("Third", _comboBox.Items[1]);
+            Assert.AreEqual("Second", _comboBox.Items[2]);
+        }
+
+        [Test]
+        public void AddMRUItem_MaxItemsOne_KeepsOnlyLatest()
+        {
+            _comboBox.MaxItems = 1;
+            _comboBox.AddMRUItem("A");
+            _comboBox.AddMRUItem("B");
+
+            Assert.AreEqual(1, _comboBox.Items.Count);
+            Assert.AreEqual("B", _comboBox.Items[0]);
+        }
+
+        #endregion
+
+        #region AddMRUItem Tests
+
+        [Test]
+        public void AddMRUItem_InsertsAtTop()
+        {
+            _comboBox.AddMRUItem("First");
+            _comboBox.AddMRUItem("Second");
+
+            Assert.AreEqual("Second", _comboBox.Items[0]);
+            Assert.AreEqual("First", _comboBox.Items[1]);
+        }
+
+        [Test]
+        public void AddMRUItem_DuplicateMovesToTop()
+        {
+            _comboBox.AddMRUItem("A");
+            _comboBox.AddMRUItem("B");
+            _comboBox.AddMRUItem("C");
+            _comboBox.AddMRUItem("A");
+
+            Assert.AreEqual(3, _comboBox.Items.Count);
+            Assert.AreEqual("A", _comboBox.Items[0]);
+            Assert.AreEqual("C", _comboBox.Items[1]);
+            Assert.AreEqual("B", _comboBox.Items[2]);
+        }
+
+        [Test]
+        public void AddMRUItem_CaseInsensitive_DuplicateMovesToTop()
+        {
+            _comboBox.CaseSensitive = false;
+            _comboBox.AddMRUItem("Hello");
+            _comboBox.AddMRUItem("World");
+            _comboBox.AddMRUItem("hello");
+
+            Assert.AreEqual(2, _comboBox.Items.Count);
+            Assert.AreEqual("hello", _comboBox.Items[0]);
+            Assert.AreEqual("World", _comboBox.Items[1]);
+        }
+
+        [Test]
+        public void AddMRUItem_CaseSensitive_DifferentCaseNotDuplicate()
+        {
+            _comboBox.CaseSensitive = true;
+            _comboBox.AddMRUItem("Hello");
+            _comboBox.AddMRUItem("hello");
+
+            Assert.AreEqual(2, _comboBox.Items.Count);
+            Assert.AreEqual("hello", _comboBox.Items[0]);
+            Assert.AreEqual("Hello", _comboBox.Items[1]);
+        }
+
+        [Test]
+        public void AddMRUItem_NullOrEmpty_Ignored()
+        {
+            _comboBox.AddMRUItem(null);
+            _comboBox.AddMRUItem("");
+
+            Assert.AreEqual(0, _comboBox.Items.Count);
+        }
+
+        [Test]
+        public void AddMRUItem_SetsTextToItem()
+        {
+            _comboBox.AddMRUItem("TestItem");
+            Assert.AreEqual("TestItem", _comboBox.Text);
+        }
+
+        [Test]
+        public void AddMRUItem_MultipleDuplicates_AllRemoved()
+        {
+            _comboBox.Items.Add("A");
+            _comboBox.Items.Add("A");
+            _comboBox.Items.Add("B");
+            _comboBox.AddMRUItem("A");
+
+            Assert.AreEqual(2, _comboBox.Items.Count);
+            Assert.AreEqual("A", _comboBox.Items[0]);
+            Assert.AreEqual("B", _comboBox.Items[1]);
+        }
+
+        #endregion
+
+        #region CaseSensitive Tests
+
+        [Test]
+        public void CaseSensitive_DefaultIsFalse()
+        {
+            Assert.IsFalse(_comboBox.CaseSensitive);
+        }
+
+        [Test]
+        public void CaseSensitive_CanBeToggled()
+        {
+            _comboBox.CaseSensitive = true;
+            Assert.IsTrue(_comboBox.CaseSensitive);
+
+            _comboBox.CaseSensitive = false;
+            Assert.IsFalse(_comboBox.CaseSensitive);
+        }
+
+        #endregion
+
+        #region ItemDeleted Event Tests
+
+        [Test]
+        public void ItemDeleted_EventExists()
+        {
+            var eventInfo = typeof(Hosca.Windows.Forms.MRUComboBox).GetEvent("ItemDeleted");
+            Assert.IsNotNull(eventInfo);
+        }
+
+        [Test]
+        public void ItemDeleted_EventHandlerType()
+        {
+            var eventInfo = typeof(Hosca.Windows.Forms.MRUComboBox).GetEvent("ItemDeleted");
+            Assert.AreEqual(typeof(EventHandler<MRUItemEventArgs>), eventInfo.EventHandlerType);
+        }
+
+        #endregion
+
+        #region ItemAdded Event Tests
+
+        [Test]
+        public void ItemAdded_EventExists()
+        {
+            var eventInfo = typeof(Hosca.Windows.Forms.MRUComboBox).GetEvent("ItemAdded");
+            Assert.IsNotNull(eventInfo);
+        }
+
+        [Test]
+        public void ItemAdded_FiredOnAddMRUItem()
+        {
+            string addedItem = null;
+            _comboBox.ItemAdded += (s, e) => addedItem = e.Item;
+
+            _comboBox.AddMRUItem("Test");
+
+            Assert.AreEqual("Test", addedItem);
+        }
+
+        [Test]
+        public void ItemAdded_NotFiredForNullOrEmpty()
+        {
+            bool fired = false;
+            _comboBox.ItemAdded += (s, e) => fired = true;
+
+            _comboBox.AddMRUItem(null);
+            _comboBox.AddMRUItem("");
+
+            Assert.IsFalse(fired);
+        }
+
+        [Test]
+        public void ItemAdded_FiredForDuplicateReAdd()
+        {
+            int fireCount = 0;
+            _comboBox.ItemAdded += (s, e) => fireCount++;
+
+            _comboBox.AddMRUItem("A");
+            _comboBox.AddMRUItem("A");
+
+            Assert.AreEqual(2, fireCount);
+        }
+
+        #endregion
+
+        #region MRUItemEventArgs Tests
+
+        [Test]
+        public void MRUItemEventArgs_StoresItem()
+        {
+            var args = new MRUItemEventArgs("test");
+            Assert.AreEqual("test", args.Item);
+        }
+
+        [Test]
+        public void MRUItemEventArgs_InheritsFromEventArgs()
+        {
+            var args = new MRUItemEventArgs("test");
+            Assert.IsInstanceOf<EventArgs>(args);
         }
 
         #endregion
@@ -447,6 +657,52 @@ namespace MRUComboBox.Tests
         {
             Assert.AreEqual(DrawMode.OwnerDrawVariable, _toolStripCombo.ComboBox.DrawMode);
         }
+
+        [Test]
+        public void MaxItems_DelegatesToComboBox()
+        {
+            _toolStripCombo.MaxItems = 5;
+            Assert.AreEqual(5, _toolStripCombo.ComboBox.MaxItems);
+            Assert.AreEqual(5, _toolStripCombo.MaxItems);
+        }
+
+        [Test]
+        public void MaxItems_DefaultIs10()
+        {
+            Assert.AreEqual(10, _toolStripCombo.MaxItems);
+        }
+
+        [Test]
+        public void CaseSensitive_DelegatesToComboBox()
+        {
+            _toolStripCombo.CaseSensitive = true;
+            Assert.IsTrue(_toolStripCombo.ComboBox.CaseSensitive);
+            Assert.IsTrue(_toolStripCombo.CaseSensitive);
+        }
+
+        [Test]
+        public void CaseSensitive_DefaultIsFalse()
+        {
+            Assert.IsFalse(_toolStripCombo.CaseSensitive);
+        }
+
+        [Test]
+        public void AddMRUItem_DelegatesToComboBox()
+        {
+            _toolStripCombo.AddMRUItem("Hello");
+            Assert.AreEqual(1, _toolStripCombo.ComboBox.Items.Count);
+            Assert.AreEqual("Hello", _toolStripCombo.ComboBox.Items[0]);
+        }
+
+        [Test]
+        public void AddMRUItem_InsertsAtTop()
+        {
+            _toolStripCombo.AddMRUItem("First");
+            _toolStripCombo.AddMRUItem("Second");
+
+            Assert.AreEqual("Second", _toolStripCombo.Items[0]);
+            Assert.AreEqual("First", _toolStripCombo.Items[1]);
+        }
     }
 
     [TestFixture]
@@ -481,6 +737,13 @@ namespace MRUComboBox.Tests
                 Assert.AreSame(combo, host.Control);
                 Assert.IsInstanceOf<Hosca.Windows.Forms.MRUComboBox>(host.Control);
             }
+        }
+
+        [Test]
+        public void Namespace_IsHoscaWindowsForms()
+        {
+            var type = typeof(MRUComboBoxStripControlHost);
+            Assert.AreEqual("Hosca.Windows.Forms", type.Namespace);
         }
     }
 }

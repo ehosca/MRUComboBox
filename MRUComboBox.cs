@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -8,24 +9,118 @@ using Hosca.Windows.Forms.Properties;
 
 namespace Hosca.Windows.Forms
 {
+    public class MRUItemEventArgs : EventArgs
+    {
+        public MRUItemEventArgs(string item)
+        {
+            Item = item;
+        }
+
+        public string Item { get; }
+    }
+
     public class MRUComboBox : ComboBox
     {
+        private const int DeleteIconVerticalPadding = 2;
+        private const int DefaultMaxItems = 10;
+
         private readonly Dictionary<int, Rectangle> _deleteRectangles = new Dictionary<int, Rectangle>();
+        private bool _suppressPromote;
 
         public MRUComboBox()
         {
             DropDownStyle = ComboBoxStyle.DropDown;
             DrawMode = DrawMode.OwnerDrawVariable;
             DrawItem += HandleMruComboBoxDrawItem;
+            MaxItems = DefaultMaxItems;
+            CaseSensitive = false;
         }
 
+        [Category("Behavior")]
+        [Description("Maximum number of MRU items to retain.")]
+        [DefaultValue(DefaultMaxItems)]
+        public int MaxItems { get; set; }
+
+        [Category("Behavior")]
+        [Description("Whether duplicate detection is case-sensitive.")]
+        [DefaultValue(false)]
+        public bool CaseSensitive { get; set; }
+
+        public event EventHandler<MRUItemEventArgs> ItemDeleted;
+
+        public event EventHandler<MRUItemEventArgs> ItemAdded;
+
         private DropdownListBoxWindow ListBoxWindow { get; set; }
+
+        public void AddMRUItem(string item)
+        {
+            if (string.IsNullOrEmpty(item))
+                return;
+
+            var comparison = CaseSensitive
+                ? StringComparison.Ordinal
+                : StringComparison.OrdinalIgnoreCase;
+
+            _suppressPromote = true;
+            try
+            {
+                for (int i = Items.Count - 1; i >= 0; i--)
+                {
+                    if (string.Equals(Items[i]?.ToString(), item, comparison))
+                    {
+                        Items.RemoveAt(i);
+                    }
+                }
+
+                Items.Insert(0, item);
+
+                while (Items.Count > MaxItems && MaxItems > 0)
+                {
+                    Items.RemoveAt(Items.Count - 1);
+                }
+
+                Text = item;
+            }
+            finally
+            {
+                _suppressPromote = false;
+            }
+
+            ItemAdded?.Invoke(this, new MRUItemEventArgs(item));
+        }
+
+        protected override void OnSelectedIndexChanged(EventArgs e)
+        {
+            base.OnSelectedIndexChanged(e);
+
+            if (_suppressPromote || SelectedIndex <= 0 || SelectedIndex >= Items.Count)
+                return;
+
+            var selectedItem = Items[SelectedIndex]?.ToString();
+            if (selectedItem == null)
+                return;
+
+            _suppressPromote = true;
+            try
+            {
+                Items.RemoveAt(SelectedIndex);
+                Items.Insert(0, selectedItem);
+                SelectedIndex = 0;
+            }
+            finally
+            {
+                _suppressPromote = false;
+            }
+        }
 
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            var hWind = GetComboBoxListInternal(Handle);
-            ListBoxWindow = new DropdownListBoxWindow(hWind);
+            var hWnd = GetComboBoxListInternal(Handle);
+            if (hWnd == IntPtr.Zero)
+                return;
+
+            ListBoxWindow = new DropdownListBoxWindow(hWnd);
             ListBoxWindow.MouseUp += HandleListBoxWindowMouseUp;
         }
 
@@ -33,31 +128,40 @@ namespace Hosca.Windows.Forms
         {
             var indicesToRemove =
                 (from kv in _deleteRectangles where kv.Value.Contains(e.Location) select kv.Key).ToList();
-            
+
             indicesToRemove.Sort((a, b) => b.CompareTo(a));
 
             if (indicesToRemove.Any())
             {
                 foreach (var i in indicesToRemove)
+                {
+                    var itemText = Items[i]?.ToString();
                     Items.RemoveAt(i);
-            }
-            
-            Focus();
+                    _deleteRectangles.Remove(i);
+                    if (itemText != null)
+                        ItemDeleted?.Invoke(this, new MRUItemEventArgs(itemText));
+                }
 
+                Focus();
+            }
         }
 
         internal static IntPtr GetComboBoxListInternal(IntPtr cboHandle)
         {
             var cbInfo = new COMBOBOXINFO {cbSize = Marshal.SizeOf<COMBOBOXINFO>()};
-            GetComboBoxInfo(cboHandle, ref cbInfo);
+            if (!GetComboBoxInfo(cboHandle, ref cbInfo))
+                return IntPtr.Zero;
             return cbInfo.hwndList;
         }
 
         private void HandleMruComboBoxDrawItem(object sender, DrawItemEventArgs e)
         {
+            if (e.Index < 0 || e.Index >= Items.Count)
+                return;
+
             e.DrawBackground();
 
-            var itemText = (string) Items[e.Index];
+            var itemText = Items[e.Index]?.ToString() ?? string.Empty;
 
             var itemBounds = e.Bounds;
             itemBounds.Width -= itemBounds.Height;
@@ -68,7 +172,7 @@ namespace Hosca.Windows.Forms
             }
 
             var deleteRectangle = new Rectangle(itemBounds.Width,
-                itemBounds.Y + 2, 
+                itemBounds.Y + DeleteIconVerticalPadding,
                 Resources.DeleteIcon.Width,
                 Resources.DeleteIcon.Height);
 
@@ -92,7 +196,8 @@ namespace Hosca.Windows.Forms
                 {
                     case WM_LBUTTONUP:
                     {
-                        var p = new Point((int) m.LParam & 0xFFFF, ((int) m.LParam >> 16) & 0xFFFF);
+                        var lParam = m.LParam.ToInt64();
+                        var p = new Point((int)(lParam & 0xFFFF), (int)((lParam >> 16) & 0xFFFF));
                         MouseUp?.Invoke(null, new MouseEventArgs(MouseButtons.Left, 1, p.X, p.Y, 0));
                         break;
                     }
